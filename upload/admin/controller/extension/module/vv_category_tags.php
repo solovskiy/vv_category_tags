@@ -38,10 +38,11 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
         // Удаляем старую запись на случай переустановки
         $this->model_setting_event->deleteEventByCode('vv_category_tags');
 
+        // Wildcard: ловим вью категории и модуля OCFilter (фильтрация по route внутри обработчика).
         // trigger хранится с префиксом 'catalog/' — startup/event.php его стрипает
         $this->model_setting_event->addEvent(
             'vv_category_tags',
-            'catalog/view/product/category/before',
+            'catalog/view/*/before',
             'extension/module/vv_category_tags/onCategoryView',
             1,
             0

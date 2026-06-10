@@ -3,47 +3,58 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
 
     const CACHE_TTL = 3600;
 
+    private $stats_loaded = false;
+    private $stats_value  = false;
+
     /**
-     * Обработчик события view/product/category/before.
-     * Заменяет плейсхолдеры {vv_*} в описании и мета-тегах категории.
+     * Обработчик события catalog/view/*\/before.
+     * Заменяет плейсхолдеры {vv_*} в описании категории, описании SEO-страницы
+     * OCFilter и мета-тегах. Срабатывает на страницах категорий и фильтра.
      */
     public function onCategoryView(&$route, &$data, &$template) {
-        $desc        = isset($data['description']) ? (string)$data['description'] : '';
-        $meta_title  = $this->document->getTitle();
-        $meta_desc   = $this->document->getDescription();
-
-        // Быстрая проверка: есть ли токены хоть в одном поле
-        $has_token = strpos($desc, '{vv_') !== false
-            || strpos($meta_title, '{vv_') !== false
-            || strpos($meta_desc, '{vv_') !== false;
-
-        if (!$has_token) {
+        // Только вью категории и модуля OCFilter — там лежат описания с токенами
+        if (strpos($route, 'product/category') === false
+            && strpos($route, 'ocfilter') === false) {
             return;
         }
 
-        $path = isset($this->request->get['path']) ? (string)$this->request->get['path'] : '';
-        $parts = explode('_', $path);
-        $category_id = (int)end($parts);
+        $handlers = null; // ленивая инициализация — только если найдём токен
 
-        if (!$category_id) {
-            return;
-        }
-
-        $handlers = $this->getTokenHandlers($category_id);
-
-        // Описание категории
-        if (strpos($desc, '{vv_') !== false) {
-            $data['description'] = $this->replaceTokens($desc, $handlers);
-        }
-
-        // meta_title (document)
+        // Мета-теги документа (заголовок/описание)
+        $meta_title = $this->document->getTitle();
         if (strpos($meta_title, '{vv_') !== false) {
+            $handlers = $handlers ?: $this->getTokenHandlers();
             $this->document->setTitle($this->replaceTokens($meta_title, $handlers));
         }
 
-        // meta_description (document)
+        $meta_desc = $this->document->getDescription();
         if (strpos($meta_desc, '{vv_') !== false) {
+            $handlers = $handlers ?: $this->getTokenHandlers();
             $this->document->setDescription($this->replaceTokens($meta_desc, $handlers));
+        }
+
+        // Строковые значения $data (description категории, description_top/bottom OCFilter)
+        $this->walkReplace($data, $handlers);
+    }
+
+    /**
+     * Рекурсивно проходит по $data и заменяет токены в строках.
+     * $handlers инициализируется лениво при первом найденном токене.
+     */
+    private function walkReplace(&$value, &$handlers) {
+        if (is_array($value)) {
+            foreach ($value as &$item) {
+                $this->walkReplace($item, $handlers);
+            }
+            unset($item);
+            return;
+        }
+
+        if (is_string($value) && strpos($value, '{vv_') !== false) {
+            if ($handlers === null) {
+                $handlers = $this->getTokenHandlers();
+            }
+            $value = $this->replaceTokens($value, $handlers);
         }
     }
 
@@ -60,53 +71,123 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
 
     /**
      * Карта токенов. Добавить новый — одна запись.
-     * Все токены используют общий кешированный getCategoryStats().
+     * Все токены используют общую кешированную статистику текущей страницы.
      */
-    private function getTokenHandlers($category_id) {
-        return [
-            'vv_min_price'     => function() use ($category_id) {
-                $s = $this->getStats($category_id);
+    private function getTokenHandlers() {
+        return array(
+            'vv_min_price'     => function() {
+                $s = $this->getStats();
                 return $s ? $this->currency->format($s['min_price'], $this->getCurrency()) : '';
             },
-            'vv_max_price'     => function() use ($category_id) {
-                $s = $this->getStats($category_id);
+            'vv_max_price'     => function() {
+                $s = $this->getStats();
                 return $s ? $this->currency->format($s['max_price'], $this->getCurrency()) : '';
             },
-            'vv_count'         => function() use ($category_id) {
-                $s = $this->getStats($category_id);
+            'vv_count'         => function() {
+                $s = $this->getStats();
                 return $s ? (string)$s['count_all'] : '';
             },
-            'vv_count_instock' => function() use ($category_id) {
-                $s = $this->getStats($category_id);
+            'vv_count_instock' => function() {
+                $s = $this->getStats();
                 return $s ? (string)$s['count_instock'] : '';
             },
-        ];
+        );
     }
 
     /**
-     * Возвращает статистику категории из кеша или БД.
-     * Все четыре токена делят один кеш-ключ — один SQL на страницу.
+     * Статистика текущей страницы (с учётом фильтра OCFilter, если он активен).
+     * Контекст определяется один раз за запрос и мемоизируется.
      */
-    private function getStats($category_id) {
+    private function getStats() {
+        if ($this->stats_loaded) {
+            return $this->stats_value;
+        }
+        $this->stats_loaded = true;
+
         $store_id = (int)$this->config->get('config_store_id');
         $currency = $this->getCurrency();
 
-        $cache_key = 'vv_category_tags.stats.' . $category_id . '.' . $currency . '.' . $store_id;
+        $this->load->model('extension/module/vv_category_tags');
+        $model = $this->model_extension_module_vv_category_tags;
 
-        $cached = $this->cache->get($cache_key);
+        // SEO-страница OCFilter → статистика по отфильтрованной выборке
+        if (isset($this->request->get['ocfilter_page_id'])) {
+            $page_id = (int)$this->request->get['ocfilter_page_id'];
+            $cache_key = 'vv_category_tags.stats.f' . $page_id . '.' . $currency . '.' . $store_id;
 
-        // cache->get() возвращает false при промахе
-        if ($cached !== false) {
-            return $cached; // null (нет товаров) или массив со статистикой
+            $cached = $this->cache->get($cache_key);
+            if ($cached !== false) {
+                return $this->stats_value = $cached;
+            }
+
+            $page = $model->getOcfilterPage($page_id);
+            if ($page) {
+                $groups = $this->parseFilterParams($page['params']);
+                $stats = $model->getFilteredStats((int)$page['category_id'], $store_id, $groups);
+            } else {
+                $stats = null;
+            }
+
+            $this->cache->set($cache_key, $stats, self::CACHE_TTL);
+            return $this->stats_value = $stats;
         }
 
-        $this->load->model('extension/module/vv_category_tags');
-        $stats = $this->model_extension_module_vv_category_tags->getCategoryStats($category_id, $store_id);
+        // Обычная категория → статистика по всей категории
+        $path = isset($this->request->get['path']) ? (string)$this->request->get['path'] : '';
+        $parts = explode('_', $path);
+        $category_id = (int)end($parts);
 
-        // кешируем и null (нет товаров) — чтобы не долбить БД повторно
+        if (!$category_id) {
+            return $this->stats_value = null;
+        }
+
+        $cache_key = 'vv_category_tags.stats.' . $category_id . '.' . $currency . '.' . $store_id;
+        $cached = $this->cache->get($cache_key);
+        if ($cached !== false) {
+            return $this->stats_value = $cached;
+        }
+
+        $stats = $model->getCategoryStats($category_id, $store_id);
         $this->cache->set($cache_key, $stats, self::CACHE_TTL);
+        return $this->stats_value = $stats;
+    }
 
-        return $stats;
+    /**
+     * Разбирает params SEO-страницы OCFilter ({"73.2":["valueId",...]})
+     * в группы для getFilteredStats. Ключ — "filter_id.source".
+     * Диапазонные значения (slider) пропускаются.
+     */
+    private function parseFilterParams($params_json) {
+        $params = json_decode((string)$params_json, true);
+        if (!is_array($params)) {
+            return array();
+        }
+
+        $groups = array();
+        foreach ($params as $key => $values) {
+            $kp = explode('.', $key);
+            if (!ctype_digit((string)$kp[0])) {
+                continue; // не атрибутный фильтр (например price-диапазон)
+            }
+            $filter_id = (int)$kp[0];
+            $source    = isset($kp[1]) ? (int)$kp[1] : 0;
+
+            $clean = array();
+            foreach ((array)$values as $v) {
+                if (ctype_digit((string)$v)) {
+                    $clean[] = (string)$v;
+                }
+            }
+            if ($clean) {
+                $groups[] = array(
+                    'filter_id' => $filter_id,
+                    'source'    => $source,
+                    'values'    => $clean,
+                );
+            }
+        }
+
+        return $groups;
     }
 
     private function getCurrency() {
