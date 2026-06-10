@@ -1,17 +1,23 @@
 <?php
 class ControllerExtensionModuleVvCategoryTags extends Controller {
 
-    const CACHE_TTL = 3600;
+    const CACHE_TTL    = 3600;
+    const EVENT_CODE   = 'vv_category_tags';
+    const EVENT_TRIGGER = 'catalog/view/*/before';
 
     private $stats_loaded = false;
     private $stats_value  = false;
 
     /**
      * Обработчик события catalog/view/*\/before.
-     * Заменяет плейсхолдеры {vv_*} в описании категории, описании SEO-страницы
-     * OCFilter и мета-тегах. Срабатывает на страницах категорий и фильтра.
+     * Заменяет плейсхолдеры {vv_*} в описании категории, у производителя,
+     * в описании SEO-страницы OCFilter и в мета-тегах.
      */
     public function onCategoryView(&$route, &$data, &$template) {
+        // Self-heal: гарантируем, что событие зарегистрировано на wildcard-триггер.
+        // Позволяет модулю работать на всех типах страниц без переустановки и ручного SQL.
+        $this->ensureEvent();
+
         // Только вью категории, производителя и модуля OCFilter — там лежат описания с токенами
         if (strpos($route, 'product/category') === false
             && strpos($route, 'manufacturer') === false
@@ -36,6 +42,40 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
 
         // Строковые значения $data (description категории, description_top/bottom OCFilter)
         $this->walkReplace($data, $handlers);
+    }
+
+    /**
+     * Самовосстановление регистрации события.
+     * Если триггер в oc_event не равен wildcard — чинит его одним UPDATE.
+     * Результат кешируется, поэтому реально выполняется один раз.
+     * Изменение применяется со следующего запроса (события читаются на старте).
+     */
+    private function ensureEvent() {
+        if ($this->cache->get('vv_category_tags.event_ok')) {
+            return;
+        }
+        try {
+            $row = $this->db->query("
+                SELECT event_id, `trigger`
+                FROM `" . DB_PREFIX . "event`
+                WHERE code = '" . $this->db->escape(self::EVENT_CODE) . "'
+                LIMIT 1
+            ")->row;
+
+            if (!empty($row)) {
+                if ($row['trigger'] !== self::EVENT_TRIGGER) {
+                    $this->db->query("
+                        UPDATE `" . DB_PREFIX . "event`
+                        SET `trigger` = '" . $this->db->escape(self::EVENT_TRIGGER) . "'
+                        WHERE event_id = '" . (int)$row['event_id'] . "'
+                    ");
+                }
+                // Запоминаем, что событие в порядке (или только что починено)
+                $this->cache->set('vv_category_tags.event_ok', 1, 86400);
+            }
+        } catch (Exception $e) {
+            // Молча: self-heal не должен ломать рендер страницы
+        }
     }
 
     /**
