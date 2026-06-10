@@ -14,13 +14,16 @@
 ## Где работают токены
 
 - **Страницы категорий** — в `Description` категории. Статистика по всей категории.
+- **Страницы производителей** — в описании/мета производителя
+  (`oc_manufacturer_description`). Статистика по товарам производителя
+  (`product.manufacturer_id`).
 - **SEO-страницы OCFilter** — в `description_top` / `description_bottom` / мета-тегах
   SEO-страницы фильтра. Статистика считается **по отфильтрованной выборке**
   (товары категории страницы ∩ значения фильтра OCFilter).
 
 Замена выполняется через событие `catalog/view/*/before`: обработчик ловит вью
-категории и модуля OCFilter и заменяет токены во всех строковых полях `$data`
-плюс в `meta_title` / `meta_description` документа.
+категории, производителя и модуля OCFilter и заменяет токены во всех строковых
+полях `$data` плюс в `meta_title` / `meta_description` документа.
 
 ## Установка
 
@@ -57,6 +60,7 @@
 
 TTL = 3600 сек (1 час). Ключи:
 - категория: `vv_category_tags.stats.{category_id}.{currency}.{store_id}`
+- производитель: `vv_category_tags.stats.m{manufacturer_id}.{currency}.{store_id}`
 - SEO-страница OCFilter: `vv_category_tags.stats.f{page_id}.{currency}.{store_id}`
 
 ## Добавить новый плейсхолдер

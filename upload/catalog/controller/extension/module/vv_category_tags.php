@@ -12,8 +12,9 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
      * OCFilter и мета-тегах. Срабатывает на страницах категорий и фильтра.
      */
     public function onCategoryView(&$route, &$data, &$template) {
-        // Только вью категории и модуля OCFilter — там лежат описания с токенами
+        // Только вью категории, производителя и модуля OCFilter — там лежат описания с токенами
         if (strpos($route, 'product/category') === false
+            && strpos($route, 'manufacturer') === false
             && strpos($route, 'ocfilter') === false) {
             return;
         }
@@ -128,6 +129,22 @@ class ControllerExtensionModuleVvCategoryTags extends Controller {
                 $stats = null;
             }
 
+            $this->cache->set($cache_key, $stats, self::CACHE_TTL);
+            return $this->stats_value = $stats;
+        }
+
+        // Страница производителя → статистика по товарам производителя
+        if (isset($this->request->get['manufacturer_id']) && !isset($this->request->get['path'])) {
+            $manufacturer_id = (int)$this->request->get['manufacturer_id'];
+            if (!$manufacturer_id) {
+                return $this->stats_value = null;
+            }
+            $cache_key = 'vv_category_tags.stats.m' . $manufacturer_id . '.' . $currency . '.' . $store_id;
+            $cached = $this->cache->get($cache_key);
+            if ($cached !== false) {
+                return $this->stats_value = $cached;
+            }
+            $stats = $model->getManufacturerStats($manufacturer_id, $store_id);
             $this->cache->set($cache_key, $stats, self::CACHE_TTL);
             return $this->stats_value = $stats;
         }

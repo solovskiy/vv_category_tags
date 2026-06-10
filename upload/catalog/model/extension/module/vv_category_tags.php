@@ -8,7 +8,7 @@ class ModelExtensionModuleVvCategoryTags extends Model {
      * Возвращает массив или null если подходящих товаров нет.
      */
     public function getCategoryStats($category_id, $store_id) {
-        return $this->aggregate($category_id, $store_id, []);
+        return $this->aggregate(array('category' => (int)$category_id), $store_id, array());
     }
 
     /**
@@ -18,28 +18,47 @@ class ModelExtensionModuleVvCategoryTags extends Model {
      * Внутри группы значения объединяются по OR, группы — по AND.
      */
     public function getFilteredStats($category_id, $store_id, array $groups) {
-        return $this->aggregate($category_id, $store_id, $groups);
+        return $this->aggregate(array('category' => (int)$category_id), $store_id, $groups);
     }
 
-    private function aggregate($category_id, $store_id, array $groups) {
+    /**
+     * Статистика по товарам производителя (product.manufacturer_id).
+     */
+    public function getManufacturerStats($manufacturer_id, $store_id) {
+        return $this->aggregate(array('manufacturer' => (int)$manufacturer_id), $store_id, array());
+    }
+
+    /**
+     * $scope — ['category' => id] или ['manufacturer' => id].
+     */
+    private function aggregate(array $scope, $store_id, array $groups) {
         $sql = "
             SELECT
                 MIN(p.price)                  AS min_price,
                 MAX(p.price)                  AS max_price,
                 COUNT(DISTINCT p.product_id)  AS count_all,
                 SUM(p.quantity > 0)           AS count_instock
-            FROM " . DB_PREFIX . "product_to_category ptc
-            JOIN " . DB_PREFIX . "product p
-                ON p.product_id = ptc.product_id
-               AND p.status = 1
-               AND p.price > 0
-               AND p.date_available <= NOW()
-            WHERE ptc.category_id = '" . (int)$category_id . "'
+            FROM " . DB_PREFIX . "product p
+            WHERE p.status = 1
+              AND p.price > 0
+              AND p.date_available <= NOW()
               AND EXISTS (
                   SELECT 1 FROM " . DB_PREFIX . "product_to_store pts
                   WHERE pts.product_id = p.product_id
                     AND pts.store_id = '" . (int)$store_id . "'
               )";
+
+        if (isset($scope['category'])) {
+            $sql .= "
+              AND EXISTS (
+                  SELECT 1 FROM " . DB_PREFIX . "product_to_category ptc
+                  WHERE ptc.product_id = p.product_id
+                    AND ptc.category_id = '" . (int)$scope['category'] . "'
+              )";
+        } elseif (isset($scope['manufacturer'])) {
+            $sql .= "
+              AND p.manufacturer_id = '" . (int)$scope['manufacturer'] . "'";
+        }
 
         foreach ($groups as $g) {
             $values = array();
